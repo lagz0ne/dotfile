@@ -1,54 +1,89 @@
-add_newline = true
-command_timeout = 750
-format = "$username$hostname$directory$git_branch$git_status$cmd_duration$line_break$character"
+"$schema" = 'https://starship.rs/config-schema.json'
 
-[username]
-show_always = true
-style_user = "green bold"
-style_root = "red bold"
-format = "[$user]($style)"
-
-[hostname]
-ssh_only = false
-trim_at = "."
-style = "yellow bold"
-format = "[@$hostname ]($style)"
-
-[directory]
-home_symbol = "~"
-truncation_length = 4
-truncate_to_repo = false
-style = "blue bold"
-read_only = " ro"
-read_only_style = "red bold"
-format = "[$path]($style)[$read_only]($read_only_style) "
-
-[git_branch]
-symbol = "git:"
-style = "purple bold"
-format = "[$symbol$branch(:$remote_branch)]($style) "
-
-[git_status]
-style = "red bold"
-format = "([$all_status$ahead_behind]($style) )"
-conflicted = "="
-ahead = ">"
-behind = "<"
-diverged = "<>"
-up_to_date = ""
-untracked = "?"
-stashed = "$"
-modified = "!"
-staged = "+"
-renamed = "r"
-deleted = "x"
-
-[cmd_duration]
-min_time = 1000
-style = "yellow"
-format = "[took $duration]($style) "
+# Gray palette:
+#   bright:  #e0e0e0
+#   light:   #b0b0b0
+#   medium:  #808080
+#   dim:     #606060
 
 [character]
-success_symbol = "[>](green bold)"
-error_symbol = "[>](red bold)"
-vimcmd_symbol = "[<](green bold)"
+success_symbol = "[❯](bold #b0b0b0)"
+error_symbol = "[❯](bold #e0e0e0)"
+
+[directory]
+style = "bold #b0b0b0"
+
+[git_branch]
+style = "bold #808080"
+
+[git_status]
+style = "#b0b0b0"
+
+[git_metrics]
+added_style = "#b0b0b0"
+deleted_style = "#808080"
+
+[cmd_duration]
+style = "#808080"
+
+[username]
+style_user = "#b0b0b0"
+style_root = "bold #e0e0e0"
+
+[hostname]
+style = "#808080"
+
+[package]
+style = "#808080"
+
+[battery]
+full_symbol = "• "
+charging_symbol = "⇡ "
+discharging_symbol = "⇣ "
+unknown_symbol = "❓ "
+empty_symbol = "❗ "
+
+[nodejs]
+style = "#b0b0b0"
+symbol = "⬢ "
+
+[python]
+style = "#808080"
+
+[rust]
+style = "#b0b0b0"
+
+[golang]
+style = "#808080"
+
+[java]
+style = "#b0b0b0"
+
+[docker_context]
+style = "#808080"
+
+[kubernetes]
+style = "#b0b0b0"
+
+[terraform]
+style = "#808080"
+
+[aws]
+style = "#b0b0b0"
+
+[gcloud]
+style = "#808080"
+
+[erlang]
+symbol = "ⓔ "
+style = "#808080"
+
+[fortran]
+symbol = "F "
+
+[pulumi]
+symbol = "🧊 "
+style = "#808080"
+
+[typst]
+symbol = "t "
