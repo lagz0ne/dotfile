@@ -1,0 +1,54 @@
+add_newline = true
+command_timeout = 750
+format = "$username$hostname$directory$git_branch$git_status$cmd_duration$line_break$character"
+
+[username]
+show_always = true
+style_user = "green bold"
+style_root = "red bold"
+format = "[$user]($style)"
+
+[hostname]
+ssh_only = false
+trim_at = "."
+style = "yellow bold"
+format = "[@$hostname ]($style)"
+
+[directory]
+home_symbol = "~"
+truncation_length = 4
+truncate_to_repo = false
+style = "blue bold"
+read_only = " ro"
+read_only_style = "red bold"
+format = "[$path]($style)[$read_only]($read_only_style) "
+
+[git_branch]
+symbol = "git:"
+style = "purple bold"
+format = "[$symbol$branch(:$remote_branch)]($style) "
+
+[git_status]
+style = "red bold"
+format = "([$all_status$ahead_behind]($style) )"
+conflicted = "="
+ahead = ">"
+behind = "<"
+diverged = "<>"
+up_to_date = ""
+untracked = "?"
+stashed = "$"
+modified = "!"
+staged = "+"
+renamed = "r"
+deleted = "x"
+
+[cmd_duration]
+min_time = 1000
+style = "yellow"
+format = "[took $duration]($style) "
+
+[character]
+success_symbol = "[>](green bold)"
+error_symbol = "[>](red bold)"
+vimcmd_symbol = "[<](green bold)"
