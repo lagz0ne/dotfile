@@ -3,14 +3,16 @@ cat <<'EOF'
 tmux shortcuts
 
 opensessions
-  Alt-1 .. Alt-9      switch to visible session by index
-  Alt-s               reveal and focus sidebar
-  Ctrl-Shift-e        reveal and focus sidebar
   Ctrl-Space s        reveal and focus sidebar
   Ctrl-Space o s      reveal and focus sidebar
   Ctrl-Space o t      toggle sidebar
   Ctrl-Space o e      spread panes even-horizontal
   Ctrl-Space o 1..9   switch to visible session by index
+
+Remote tmux
+  Ctrl-Space Ctrl-Space  send Ctrl-Space prefix to nested tmux
+  Ctrl-Space M           toggle local mouse capture for remote tmux
+  Ctrl-b                 passes through for default remote tmux prefix
 
 Navigation
   Ctrl-Space F        fuzzy TUI: sessions, windows, panes, clipboard, keys
