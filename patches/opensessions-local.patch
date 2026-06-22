@@ -1,0 +1,655 @@
+diff --git a/packages/runtime-rs/src/tmux_provider.rs b/packages/runtime-rs/src/tmux_provider.rs
+index fa72cdb..2147fc8 100644
+--- a/packages/runtime-rs/src/tmux_provider.rs
++++ b/packages/runtime-rs/src/tmux_provider.rs
+@@ -527,6 +527,8 @@ impl MuxProvider for TmuxProvider {
+             &format!("{focus_cmd} ; {ensure_cmd}"),
+         );
+         self.client.set_global_hook("after-select-pane", &focus_cmd);
++        self.client
++            .set_global_hook("after-new-session", &ensure_cmd);
+         self.client.set_global_hook("session-created", &refresh_cmd);
+         self.client.set_global_hook("session-closed", &refresh_cmd);
+         self.client
+diff --git a/packages/sidebar-core-rs/src/app.rs b/packages/sidebar-core-rs/src/app.rs
+index 2d92d8c..1551e11 100644
+--- a/packages/sidebar-core-rs/src/app.rs
++++ b/packages/sidebar-core-rs/src/app.rs
+@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
+ 
+ use opensessions_runtime::sidebar_width_sync::{MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
+ 
++use crate::LOCAL_HIDE_AGENT_PANEL;
+ use crate::generated::protocol::{
+     AgentEvent, AgentLiveness, AgentPanelScope, AgentStatus, ClientCommand, ServerMessage,
+     ServerState, SessionData, SessionFilterMode,
+@@ -550,7 +551,11 @@ impl App {
+             't' => self.open_theme_picker(),
+             'w' => self.open_width_slider(),
+             'f' => self.cycle_filter(),
+-            'a' => self.toggle_agent_panel_scope(),
++            'a' => {
++                if !LOCAL_HIDE_AGENT_PANEL {
++                    self.toggle_agent_panel_scope();
++                }
++            }
+             _ => {}
+         }
+     }
+diff --git a/packages/sidebar-core-rs/src/input.rs b/packages/sidebar-core-rs/src/input.rs
+index 85774bc..6b2dc71 100644
+--- a/packages/sidebar-core-rs/src/input.rs
++++ b/packages/sidebar-core-rs/src/input.rs
+@@ -1,3 +1,4 @@
++use crate::LOCAL_HIDE_AGENT_PANEL;
+ use crate::app::{App, Modal, PanelFocus};
+ use crate::renderer::{THEME_NAMES, compute_hit_target, detail_separator_row};
+ 
+@@ -59,7 +60,11 @@ pub fn apply_ui_key(app: &mut App, key: UiKey) {
+     match key {
+         UiKey::AltUp => app.reorder_focused_session(-1),
+         UiKey::AltDown => app.reorder_focused_session(1),
+-        UiKey::CtrlJ => app.focus_agents_panel(),
++        UiKey::CtrlJ => {
++            if !LOCAL_HIDE_AGENT_PANEL {
++                app.focus_agents_panel();
++            }
++        }
+         UiKey::CtrlK => app.focus_sessions_panel(),
+         UiKey::Down => {
+             if app.panel_focus == PanelFocus::Agents {
+@@ -76,14 +81,16 @@ pub fn apply_ui_key(app: &mut App, key: UiKey) {
+             }
+         }
+         UiKey::Left => {
+-            if app.panel_focus == PanelFocus::Sessions {
+-                app.resize_detail_panel(-1);
+-            } else {
+-                app.focus_sessions_panel();
++            if !LOCAL_HIDE_AGENT_PANEL {
++                if app.panel_focus == PanelFocus::Sessions {
++                    app.resize_detail_panel(-1);
++                } else {
++                    app.focus_sessions_panel();
++                }
+             }
+         }
+         UiKey::Right => {
+-            if app.panel_focus == PanelFocus::Sessions {
++            if !LOCAL_HIDE_AGENT_PANEL && app.panel_focus == PanelFocus::Sessions {
+                 let agent_count = app
+                     .focused_session_name()
+                     .and_then(|name| app.sessions.iter().find(|s| s.name == name))
+@@ -221,7 +228,7 @@ pub fn apply_ui_mouse(app: &mut App, event: UiMouse) {
+         } => {
+             let separator_row = detail_separator_row(app, width, height);
+             let session_rows = separator_row.saturating_sub(3) as usize;
+-            if y < separator_row {
++            if y < separator_row || LOCAL_HIDE_AGENT_PANEL {
+                 app.scroll_sessions(-1, session_rows);
+             } else if app.panel_focus == PanelFocus::Agents {
+                 app.move_agent_focus(-1);
+@@ -237,7 +244,7 @@ pub fn apply_ui_mouse(app: &mut App, event: UiMouse) {
+         } => {
+             let separator_row = detail_separator_row(app, width, height);
+             let session_rows = separator_row.saturating_sub(3) as usize;
+-            if y < separator_row {
++            if y < separator_row || LOCAL_HIDE_AGENT_PANEL {
+                 app.scroll_sessions(1, session_rows);
+             } else if app.panel_focus == PanelFocus::Agents {
+                 app.move_agent_focus(1);
+@@ -252,7 +259,7 @@ pub fn apply_ui_mouse(app: &mut App, event: UiMouse) {
+             height,
+         } => {
+             // Check if clicking on the separator row to start a drag resize
+-            if y == detail_separator_row(app, width, height) {
++            if !LOCAL_HIDE_AGENT_PANEL && y == detail_separator_row(app, width, height) {
+                 app.resize_drag_state = Some((y, app.detail_panel_height));
+                 return;
+             }
+diff --git a/packages/sidebar-core-rs/src/lib.rs b/packages/sidebar-core-rs/src/lib.rs
+index 7ac4f5b..13df076 100644
+--- a/packages/sidebar-core-rs/src/lib.rs
++++ b/packages/sidebar-core-rs/src/lib.rs
+@@ -3,3 +3,46 @@ pub mod generated;
+ pub mod input;
+ pub mod renderer;
+ mod session_display;
++
++// Local TPM checkout customization: keep the sidebar session-only and suppress
++// noisy agent-status signals in the session list.
++#[cfg(not(test))]
++pub(crate) const LOCAL_HIDE_AGENT_PANEL: bool = true;
++#[cfg(test)]
++pub(crate) const LOCAL_HIDE_AGENT_PANEL: bool = false;
++#[cfg(not(test))]
++pub(crate) const LOCAL_MAIN_GUTTER_COLUMNS: usize = 0;
++#[cfg(test)]
++pub(crate) const LOCAL_MAIN_GUTTER_COLUMNS: usize = 0;
++#[cfg(not(test))]
++pub(crate) const LOCAL_HIDE_ROW_WARNING_BADGES: bool = true;
++#[cfg(test)]
++pub(crate) const LOCAL_HIDE_ROW_WARNING_BADGES: bool = false;
++#[cfg(not(test))]
++pub(crate) const LOCAL_HIDE_ROW_AGENT_STATUS_BADGES: bool = true;
++#[cfg(test)]
++pub(crate) const LOCAL_HIDE_ROW_AGENT_STATUS_BADGES: bool = false;
++#[cfg(not(test))]
++pub(crate) const LOCAL_HIDE_ROW_STATUS_DOTS: bool = true;
++#[cfg(test)]
++pub(crate) const LOCAL_HIDE_ROW_STATUS_DOTS: bool = false;
++#[cfg(not(test))]
++pub(crate) const LOCAL_HIDE_SUMMARY_STATUS_DOTS: bool = true;
++#[cfg(test)]
++pub(crate) const LOCAL_HIDE_SUMMARY_STATUS_DOTS: bool = false;
++#[cfg(not(test))]
++pub(crate) const LOCAL_HIDE_SESSION_RAIL: bool = true;
++#[cfg(test)]
++pub(crate) const LOCAL_HIDE_SESSION_RAIL: bool = false;
++#[cfg(not(test))]
++pub(crate) const LOCAL_HIDE_HEADER_SESSION_COUNT: bool = true;
++#[cfg(test)]
++pub(crate) const LOCAL_HIDE_HEADER_SESSION_COUNT: bool = false;
++#[cfg(not(test))]
++pub(crate) const LOCAL_HIDE_HEADER: bool = true;
++#[cfg(test)]
++pub(crate) const LOCAL_HIDE_HEADER: bool = false;
++#[cfg(not(test))]
++pub(crate) const LOCAL_TOP_PADDING_ROWS: usize = 1;
++#[cfg(test)]
++pub(crate) const LOCAL_TOP_PADDING_ROWS: usize = 0;
+diff --git a/packages/sidebar-core-rs/src/renderer.rs b/packages/sidebar-core-rs/src/renderer.rs
+index 5802f8b..12bf193 100644
+--- a/packages/sidebar-core-rs/src/renderer.rs
++++ b/packages/sidebar-core-rs/src/renderer.rs
+@@ -13,6 +13,12 @@ use crate::generated::protocol::{
+     AgentEvent, AgentPanelScope, AgentStatus, MetadataTone, SessionData,
+ };
+ use crate::session_display::worktree_group_key;
++use crate::{
++    LOCAL_HIDE_AGENT_PANEL, LOCAL_HIDE_HEADER, LOCAL_HIDE_HEADER_SESSION_COUNT,
++    LOCAL_HIDE_ROW_AGENT_STATUS_BADGES, LOCAL_HIDE_ROW_STATUS_DOTS, LOCAL_HIDE_ROW_WARNING_BADGES,
++    LOCAL_HIDE_SESSION_RAIL, LOCAL_HIDE_SUMMARY_STATUS_DOTS, LOCAL_MAIN_GUTTER_COLUMNS,
++    LOCAL_TOP_PADDING_ROWS,
++};
+ 
+ const MAX_AGENT_PROMPT_LINES: usize = 3;
+ 
+@@ -71,23 +77,44 @@ pub(crate) fn build_model(app: &App, width: usize, height: usize) -> RenderModel
+         .terminal_width()
+         .map(|value| value as usize)
+         .unwrap_or(width);
+-    let layout = sidebar_layout(app, width as u16, height as u16);
+-    let mut lines = vec![header(app, &palette, width), StyledLine::blank()];
+-    let detail_separator_row = layout.detail_separator.y as usize;
+-    let session_scrollbar = render_sessions(app, &palette, &mut lines, detail_separator_row, width);
++    let content_width = sidebar_content_width(width);
++    let layout = sidebar_layout(app, content_width as u16, height as u16);
++    let mut lines = if LOCAL_HIDE_HEADER {
++        vec![StyledLine::blank(); LOCAL_TOP_PADDING_ROWS]
++    } else {
++        vec![header(app, &palette, content_width), StyledLine::blank()]
++    };
++    let session_limit_row = if LOCAL_HIDE_AGENT_PANEL {
++        layout.footer_separator.y as usize
++    } else {
++        layout.detail_separator.y as usize
++    };
++    let session_scrollbar =
++        render_sessions(app, &palette, &mut lines, session_limit_row, content_width);
+ 
+-    while lines.len() < detail_separator_row {
++    while lines.len() < session_limit_row {
+         lines.push(StyledLine::blank());
+     }
+-    lines.push(separator(&palette, width));
++
+     let footer_separator_row = layout.footer_separator.y as usize;
+-    let agent_scrollbar = render_detail(app, &palette, &mut lines, footer_separator_row, width);
++    let agent_scrollbar = if LOCAL_HIDE_AGENT_PANEL {
++        None
++    } else {
++        lines.push(separator(&palette, content_width));
++        render_detail(
++            app,
++            &palette,
++            &mut lines,
++            footer_separator_row,
++            content_width,
++        )
++    };
+ 
+     while lines.len() < footer_separator_row {
+         lines.push(StyledLine::blank());
+     }
+-    lines.push(separator(&palette, width));
+-    let [footer_top, footer_bottom] = footer(&palette, width);
++    lines.push(separator(&palette, content_width));
++    let [footer_top, footer_bottom] = footer(&palette, content_width);
+     lines.push(footer_top);
+     lines.push(footer_bottom);
+     while lines.len() < height {
+@@ -107,28 +134,59 @@ pub(crate) fn build_model(app: &App, width: usize, height: usize) -> RenderModel
+     }
+ }
+ 
++fn sidebar_content_width(width: usize) -> usize {
++    if width == 0 {
++        0
++    } else {
++        width.saturating_sub(LOCAL_MAIN_GUTTER_COLUMNS).max(1)
++    }
++}
++
+ #[derive(Debug, Clone, Copy)]
+ struct SidebarLayout {
+     header_rows: u16,
+     detail_separator: Rect,
+     footer_separator: Rect,
++    content_width: u16,
+ }
+ 
+ fn sidebar_layout(app: &App, width: u16, height: u16) -> SidebarLayout {
+-    const HEADER_ROWS: u16 = 2;
++    let header_rows: u16 = if LOCAL_HIDE_HEADER { 0 } else { 2 };
+     const DETAIL_SEPARATOR_ROWS: u16 = 1;
+     const FOOTER_SEPARATOR_ROWS: u16 = 1;
+     const FOOTER_ROWS: u16 = 2;
+ 
++    if LOCAL_HIDE_AGENT_PANEL {
++        let footer_separator_row = height
++            .saturating_sub(FOOTER_ROWS + FOOTER_SEPARATOR_ROWS)
++            .max(header_rows);
++        let session_rows = footer_separator_row.saturating_sub(header_rows);
++        let area = Rect::new(0, 0, width, height);
++        let [_header, _sessions, footer_separator, _footer] = Layout::vertical([
++            Constraint::Length(header_rows),
++            Constraint::Length(session_rows),
++            Constraint::Length(FOOTER_SEPARATOR_ROWS),
++            Constraint::Length(FOOTER_ROWS),
++        ])
++        .areas(area);
++
++        return SidebarLayout {
++            header_rows,
++            detail_separator: Rect::new(0, footer_separator.y, width, 0),
++            footer_separator,
++            content_width: width,
++        };
++    }
++
+     let detail_separator_row = height
+         .saturating_sub(FOOTER_SEPARATOR_ROWS + FOOTER_ROWS + app.detail_panel_height as u16)
+         .saturating_sub(DETAIL_SEPARATOR_ROWS)
+-        .max(HEADER_ROWS);
++        .max(header_rows);
+     let footer_separator_row = height
+         .saturating_sub(FOOTER_ROWS + FOOTER_SEPARATOR_ROWS)
+         .max(detail_separator_row + DETAIL_SEPARATOR_ROWS);
+ 
+-    let session_rows = detail_separator_row.saturating_sub(HEADER_ROWS);
++    let session_rows = detail_separator_row.saturating_sub(header_rows);
+     let detail_rows =
+         footer_separator_row.saturating_sub(detail_separator_row + DETAIL_SEPARATOR_ROWS);
+     let area = Rect::new(0, 0, width, height);
+@@ -140,7 +198,7 @@ fn sidebar_layout(app: &App, width: u16, height: u16) -> SidebarLayout {
+         footer_separator,
+         _footer,
+     ] = Layout::vertical([
+-        Constraint::Length(HEADER_ROWS),
++        Constraint::Length(header_rows),
+         Constraint::Length(session_rows),
+         Constraint::Length(DETAIL_SEPARATOR_ROWS),
+         Constraint::Length(detail_rows),
+@@ -150,9 +208,10 @@ fn sidebar_layout(app: &App, width: u16, height: u16) -> SidebarLayout {
+     .areas(area);
+ 
+     SidebarLayout {
+-        header_rows: HEADER_ROWS,
++        header_rows,
+         detail_separator,
+         footer_separator,
++        content_width: width,
+     }
+ }
+ 
+@@ -164,23 +223,24 @@ pub(crate) fn render_model(frame: &mut Frame<'_>, model: &RenderModel) {
+         .render(screen, frame.buffer_mut());
+ 
+     let layout = model.layout;
+-    let header = Rect::new(screen.x, screen.y, screen.width, layout.header_rows);
++    let content_width = layout.content_width.min(screen.width);
++    let header = Rect::new(screen.x, screen.y, content_width, layout.header_rows);
+     let sessions = Rect::new(
+         screen.x,
+         screen.y + layout.header_rows,
+-        screen.width,
++        content_width,
+         layout.detail_separator.y.saturating_sub(layout.header_rows),
+     );
+     let detail_separator = Rect::new(
+         screen.x,
+         screen.y + layout.detail_separator.y,
+-        screen.width,
++        content_width,
+         layout.detail_separator.height,
+     );
+     let detail = Rect::new(
+         screen.x,
+         screen.y + layout.detail_separator.y + layout.detail_separator.height,
+-        screen.width,
++        content_width,
+         layout
+             .footer_separator
+             .y
+@@ -189,13 +249,13 @@ pub(crate) fn render_model(frame: &mut Frame<'_>, model: &RenderModel) {
+     let footer_separator = Rect::new(
+         screen.x,
+         screen.y + layout.footer_separator.y,
+-        screen.width,
++        content_width,
+         layout.footer_separator.height,
+     );
+     let footer = Rect::new(
+         screen.x,
+         screen.y + layout.footer_separator.y + layout.footer_separator.height,
+-        screen.width,
++        content_width,
+         screen
+             .height
+             .saturating_sub(layout.footer_separator.y + layout.footer_separator.height),
+@@ -317,7 +377,7 @@ fn header(app: &App, palette: &Palette, width: usize) -> StyledLine {
+         let spinner_glyph = agent_spinner(spinner_clock(app));
+         let init_cells = 1 + spinner_glyph.width() + 1 + label.width();
+         let count = format!(" {sessions}");
+-        if line.width() + count.width() + init_cells <= width {
++        if !LOCAL_HIDE_HEADER_SESSION_COUNT && line.width() + count.width() + init_cells <= width {
+             line.push(count, palette.overlay0);
+         }
+         if line.width() + init_cells <= width {
+@@ -328,30 +388,36 @@ fn header(app: &App, palette: &Palette, width: usize) -> StyledLine {
+         }
+     } else {
+         let mut right = Vec::new();
+-        if running > 0 {
++        if running > 0 && !LOCAL_HIDE_SUMMARY_STATUS_DOTS {
+             right.push(format!("{}{running}", agent_spinner(spinner_clock(app))));
+         }
+-        if unseen > 0 {
++        if unseen > 0 && !LOCAL_HIDE_SUMMARY_STATUS_DOTS {
+             right.push(format!("●{unseen}"));
+         }
+-        right.push(sessions.to_string());
+-        let right = right.join(" ");
+-        let spaces = width.saturating_sub(line.width() + right.width());
+-        if spaces > 0 {
+-            line.push(" ".repeat(spaces), palette.white);
++        if !LOCAL_HIDE_HEADER_SESSION_COUNT {
++            right.push(sessions.to_string());
+         }
+-        for (idx, part) in right.split(' ').enumerate() {
+-            if idx > 0 {
+-                line.push(" ", palette.white);
++        let right = right.join(" ");
++        if right.is_empty() {
++            pad_line_to_width(&mut line, width, palette.white);
++        } else {
++            let spaces = width.saturating_sub(line.width() + right.width());
++            if spaces > 0 {
++                line.push(" ".repeat(spaces), palette.white);
++            }
++            for (idx, part) in right.split(' ').enumerate() {
++                if idx > 0 {
++                    line.push(" ", palette.white);
++                }
++                let color = if part.starts_with(agent_spinner(spinner_clock(app))) {
++                    palette.yellow
++                } else if part.starts_with('●') {
++                    palette.teal
++                } else {
++                    palette.overlay0
++                };
++                line.push(part, color);
+             }
+-            let color = if part.starts_with(agent_spinner(spinner_clock(app))) {
+-                palette.yellow
+-            } else if part.starts_with('●') {
+-                palette.teal
+-            } else {
+-                palette.overlay0
+-            };
+-            line.push(part, color);
+         }
+     }
+     line.end(CellStyle::fg(palette.white))
+@@ -621,7 +687,9 @@ fn build_group_row(
+     } else {
+         " "
+     };
+-    row.push(format!("{marker} "), marker_color);
++    if !LOCAL_HIDE_SESSION_RAIL {
++        row.push(format!("{marker} "), marker_color);
++    }
+     row.push(if collapsed { "▸ " } else { "▾ " }, marker_color);
+     row.push(
+         label,
+@@ -695,7 +763,7 @@ fn push_group_summary(
+     spinner_ts: u64,
+ ) {
+     let mut wrote = false;
+-    if summary.running_agents > 0 {
++    if summary.running_agents > 0 && !LOCAL_HIDE_SUMMARY_STATUS_DOTS {
+         let text = format!("{}{}", agent_spinner(spinner_ts), summary.running_agents);
+         if line.width() + text.width() <= width {
+             if !wrote {
+@@ -705,7 +773,7 @@ fn push_group_summary(
+             wrote = true;
+         }
+     }
+-    if summary.unseen > 0 {
++    if summary.unseen > 0 && !LOCAL_HIDE_SUMMARY_STATUS_DOTS {
+         let text = if wrote { " ●" } else { "●" };
+         if line.width() + text.width() <= width {
+             if !wrote {
+@@ -772,13 +840,14 @@ fn build_session_name_row(
+     let index = idx;
+     let focused = app.focused_session_name() == Some(session.name.as_str());
+     let current = app.current_session.as_deref() == Some(session.name.as_str());
+-    let bg = focused.then_some(palette.surface1);
++    let selected = focused || current;
++    let bg = selected.then_some(palette.surface1);
+     let index_color = if focused {
+         palette.subtext0
+     } else {
+         palette.surface2
+     };
+-    let name_color = if focused {
++    let name_color = if selected {
+         palette.text
+     } else if current {
+         palette.subtext1
+@@ -803,20 +872,27 @@ fn build_session_name_row(
+     } else {
+         " "
+     };
+-    match tree {
+-        TreePosition::Middle => {
+-            row.push(marker, marker_color);
+-            row.push(" │ ", palette.surface2);
+-        }
+-        TreePosition::Last => {
+-            row.push(marker, marker_color);
+-            row.push(" ╰ ", palette.surface2);
++    if LOCAL_HIDE_SESSION_RAIL {
++        row.push(format!("{marker} "), marker_color);
++        if tree != TreePosition::None {
++            row.push("  ", palette.white);
+         }
+-        TreePosition::Rail => {
+-            row.push(marker, marker_color);
+-            row.push(" │ ", palette.surface2);
++    } else {
++        match tree {
++            TreePosition::Middle => {
++                row.push(marker, marker_color);
++                row.push(" │ ", palette.surface2);
++            }
++            TreePosition::Last => {
++                row.push(marker, marker_color);
++                row.push(" ╰ ", palette.surface2);
++            }
++            TreePosition::Rail => {
++                row.push(marker, marker_color);
++                row.push(" │ ", palette.surface2);
++            }
++            TreePosition::None => row.push(format!("{marker} "), marker_color),
+         }
+-        TreePosition::None => row.push(format!("{marker} "), marker_color),
+     }
+     row.push(format!("{index:02} "), index_color);
+     let badges = session_agent_badges(app, palette, session, spinner_clock(app));
+@@ -829,6 +905,9 @@ fn build_session_name_row(
+         row.push(" ".repeat(spaces.max(1)), palette.white);
+         push_agent_badges(&mut row, badges);
+     }
++    if bg.is_some() {
++        pad_line_to_width(&mut row, width, palette.white);
++    }
+     row.end(CellStyle {
+         fg: palette.white,
+         bg,
+@@ -870,6 +949,10 @@ fn session_agent_badges(
+     session: &SessionData,
+     spinner_ts: u64,
+ ) -> Vec<AgentBadge> {
++    if LOCAL_HIDE_ROW_AGENT_STATUS_BADGES {
++        return Vec::new();
++    }
++
+     let agents = if session.agents.is_empty() {
+         session.agent_state.iter().collect::<Vec<_>>()
+     } else {
+@@ -882,7 +965,15 @@ fn session_agent_badges(
+     let mut badge_sources = agents
+         .into_iter()
+         .map(|agent| (agent_visual_kind(agent), agent_focus_target(session, agent)))
++        .filter(|(kind, _)| {
++            !LOCAL_HIDE_ROW_WARNING_BADGES
++                || !matches!(kind, AgentVisualKind::Interrupted | AgentVisualKind::Stale)
++        })
++        .filter(|(kind, _)| !LOCAL_HIDE_ROW_STATUS_DOTS || *kind != AgentVisualKind::DoneUnseen)
+         .collect::<Vec<_>>();
++    if badge_sources.is_empty() {
++        return Vec::new();
++    }
+     badge_sources.sort_by(|a, b| b.0.cmp(&a.0));
+     let overflow_count = badge_sources.len().saturating_sub(3);
+     badge_sources.truncate(3);
+@@ -1017,7 +1108,9 @@ fn build_session_detail_row(
+     width: usize,
+ ) -> StyledLine {
+     let focused = app.focused_session_name() == Some(session.name.as_str());
+-    let bg = focused.then_some(palette.surface1);
++    let current = app.current_session.as_deref() == Some(session.name.as_str());
++    let selected = focused || current;
++    let bg = selected.then_some(palette.surface1);
+     let hit = HitTarget::Session(session.name.clone());
+     let flashed = app.active_flash_target() == Some(&hit);
+     let bg = if flashed { Some(palette.surface1) } else { bg };
+@@ -1028,12 +1121,12 @@ fn build_session_detail_row(
+     } else {
+         dir_name(session)
+     };
+-    let branch_color = if focused {
++    let branch_color = if selected {
+         palette.pink
+     } else {
+         palette.overlay0
+     };
+-    let port_color = if focused {
++    let port_color = if selected {
+         palette.sky
+     } else {
+         palette.overlay0
+@@ -1068,6 +1161,9 @@ fn build_session_detail_row(
+         line.push(" ".repeat(spaces), palette.white);
+         push_diff_stats(&mut line, palette, session, app);
+     }
++    if bg.is_some() {
++        pad_line_to_width(&mut line, width, palette.white);
++    }
+     line.end(CellStyle {
+         fg: palette.white,
+         bg,
+@@ -1080,6 +1176,9 @@ fn rail_blank(palette: &Palette) -> StyledLine {
+ }
+ 
+ fn tree_blank(palette: &Palette, tree: TreePosition) -> StyledLine {
++    if LOCAL_HIDE_SESSION_RAIL {
++        return rail_blank(palette);
++    }
+     if tree == TreePosition::None {
+         return rail_blank(palette);
+     }
+@@ -1089,6 +1188,12 @@ fn tree_blank(palette: &Palette, tree: TreePosition) -> StyledLine {
+ }
+ 
+ fn tree_detail_prefix(tree: TreePosition) -> &'static str {
++    if LOCAL_HIDE_SESSION_RAIL {
++        return match tree {
++            TreePosition::Middle | TreePosition::Last | TreePosition::Rail => "     ",
++            TreePosition::None => "   ",
++        };
++    }
+     match tree {
+         TreePosition::Middle | TreePosition::Rail => "  │    ",
+         TreePosition::Last => "       ",
+@@ -1102,6 +1207,13 @@ fn diff_stats_width(session: &SessionData) -> usize {
+     insertions.width() + deletions.width()
+ }
+ 
++fn pad_line_to_width(line: &mut StyledLine, width: usize, color: Rgb) {
++    let spaces = width.saturating_sub(line.width());
++    if spaces > 0 {
++        line.push(" ".repeat(spaces), color);
++    }
++}
++
+ fn push_diff_stats(line: &mut StyledLine, palette: &Palette, session: &SessionData, app: &App) {
+     let hit = HitTarget::DiffCount(session.name.clone());
+     let hovered = app.hover_target.as_ref() == Some(&hit);
+@@ -2010,14 +2122,17 @@ fn agent_attention_signal(agent: &AgentEvent) -> AttentionSignal {
+ }
+ 
+ fn footer(palette: &Palette, width: usize) -> [StyledLine; 2] {
+-    let hints: &[(&str, Rgb)] = &[
++    let mut hints: Vec<(&str, Rgb)> = vec![
+         (" ", palette.white),
+         ("⇥", palette.overlay0),
+         (" cycle  ", palette.overlay1),
+         ("⏎", palette.overlay0),
+         (" go  ", palette.overlay1),
+-        ("→", palette.overlay0),
+-        (" agents  ", palette.overlay1),
++    ];
++    if !LOCAL_HIDE_AGENT_PANEL {
++        hints.extend([("→", palette.overlay0), (" agents  ", palette.overlay1)]);
++    }
++    hints.extend([
+         ("f", palette.overlay0),
+         (" filter  ", palette.overlay1),
+         ("w", palette.overlay0),
+@@ -2026,11 +2141,11 @@ fn footer(palette: &Palette, width: usize) -> [StyledLine; 2] {
+         (" hide  ", palette.overlay1),
+         ("x", palette.overlay0),
+         (" kill", palette.overlay1),
+-    ];
++    ]);
+     let mut line = StyledLine::blank();
+     let mut wrapped = StyledLine::blank();
+     let mut on_wrapped_line = false;
+-    for &(text, color) in hints {
++    for (text, color) in hints {
+         if !on_wrapped_line && line.width() + text.width() > width {
+             on_wrapped_line = true;
+         }

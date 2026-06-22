@@ -44,7 +44,8 @@ To capture the current local customization on the source machine:
 ```sh
 mkdir -p ~/dotfile/patches
 git -C ~/.config/tmux/plugins/opensessions diff \
-  -- packages/sidebar-core-rs/src/app.rs \
+  -- packages/runtime-rs/src/tmux_provider.rs \
+     packages/sidebar-core-rs/src/app.rs \
      packages/sidebar-core-rs/src/input.rs \
      packages/sidebar-core-rs/src/lib.rs \
      packages/sidebar-core-rs/src/renderer.rs \
@@ -52,16 +53,13 @@ git -C ~/.config/tmux/plugins/opensessions diff \
 ```
 
 On a new machine, first install TPM plugins, then apply the patch and rebuild
-the sidebar binary:
+the local opensessions binaries:
 
 ```sh
-plugin="$HOME/.config/tmux/plugins/opensessions"
-
-git -C "$plugin" apply "$HOME/dotfile/patches/opensessions-local.patch"
-cargo build -p opensessions-sidebar --release --manifest-path "$plugin/Cargo.toml"
-install -m 0755 "$plugin/target/release/opensessions-sidebar" "$plugin/bin/opensessions-sidebar"
-tmux source-file "$HOME/.config/tmux/tmux.conf"
+~/dotfile/scripts/apply-opensessions-local.sh
 ```
+
+The tracked patch lives at `patches/opensessions-local.patch`.
 
 ## Main tmux shortcuts
 
