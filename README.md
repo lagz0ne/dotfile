@@ -22,7 +22,8 @@ Clone the repo, then run:
 ```
 
 The installer symlinks the tracked files into `$HOME` and backs up existing
-regular files before replacing them.
+regular files before replacing them. It also bootstraps TPM at
+`~/.config/tmux/plugins/tpm` if TPM is not already installed.
 
 After installing tmux config, open tmux and run:
 
