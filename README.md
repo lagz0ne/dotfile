@@ -44,7 +44,9 @@ To capture the current local customization on the source machine:
 ```sh
 mkdir -p ~/dotfile/patches
 git -C ~/.config/tmux/plugins/opensessions diff \
-  -- packages/runtime-rs/src/tmux_provider.rs \
+  -- apps/server-rs/src/lib.rs \
+     integrations/tmux-plugin/scripts/focus.sh \
+     packages/runtime-rs/src/tmux_provider.rs \
      packages/sidebar-core-rs/src/app.rs \
      packages/sidebar-core-rs/src/input.rs \
      packages/sidebar-core-rs/src/lib.rs \

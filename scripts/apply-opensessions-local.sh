@@ -16,9 +16,9 @@ if [ ! -r "$patch_file" ]; then
   exit 1
 fi
 
-if git -C "$plugin" apply --check "$patch_file"; then
-  git -C "$plugin" apply "$patch_file"
-elif git -C "$plugin" apply --reverse --check "$patch_file"; then
+if git -C "$plugin" apply --check --unidiff-zero "$patch_file"; then
+  git -C "$plugin" apply --unidiff-zero "$patch_file"
+elif git -C "$plugin" apply --reverse --check --unidiff-zero "$patch_file"; then
   printf '%s\n' "opensessions local customization already applied"
 else
   printf '%s\n' "patch does not apply cleanly; inspect the opensessions checkout first" >&2

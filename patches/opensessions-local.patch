@@ -1,8 +1,469 @@
+diff --git a/apps/server-rs/src/lib.rs b/apps/server-rs/src/lib.rs
+index 061b33b..61fb523 100644
+--- a/apps/server-rs/src/lib.rs
++++ b/apps/server-rs/src/lib.rs
+@@ -360,6 +360,7 @@ pub struct ReadOnlyMuxStateSource {
+     session_filter: Mutex<Option<SessionFilterMode>>,
+     collapsed_worktree_groups: Mutex<HashSet<String>>,
+     session_order: Mutex<SessionOrder>,
++    switch_index_cache: Mutex<Option<String>>,
+     metadata_store: Mutex<SessionMetadataStore>,
+     agent_tracker: Mutex<AgentTracker>,
+     pi_runtime_registry: Mutex<PiRuntimeRegistry>,
+@@ -378,9 +379,15 @@ pub fn default_state_source_from_env(
+         if let Some(width) = config.as_ref().and_then(|config| config.sidebar_width) {
+             source = source.with_sidebar_width(clamp_sidebar_width(width) as u32);
+         }
+-        if let Some(height) = config.and_then(|config| config.detail_panel_height) {
++        if let Some(height) = config
++            .as_ref()
++            .and_then(|config| config.detail_panel_height)
++        {
+             source = source.with_detail_panel_height(height);
+         }
++        if let Some(filter) = config.and_then(|config| config.session_filter) {
++            source = source.with_session_filter(filter);
++        }
+         return Some(source);
+     }
+ 
+@@ -405,6 +412,7 @@ impl ReadOnlyMuxStateSource {
+             session_filter: Mutex::new(None),
+             collapsed_worktree_groups: Mutex::new(HashSet::new()),
+             session_order: Mutex::new(SessionOrder::new(None)),
++            switch_index_cache: Mutex::new(None),
+             metadata_store: Mutex::new(SessionMetadataStore::new()),
+             agent_tracker: Mutex::new(AgentTracker::new()),
+             pi_runtime_registry: Mutex::new(PiRuntimeRegistry::with_default_ttl()),
+@@ -422,6 +430,11 @@ impl ReadOnlyMuxStateSource {
+         self
+     }
+ 
++    pub fn with_session_filter(mut self, filter: SessionFilterMode) -> Self {
++        self.session_filter = Mutex::new(Some(filter));
++        self
++    }
++
+     /// Current sidebar width from the coordinator (single source of truth),
+     /// clamped to `u16` for the tmux resize APIs.
+     fn current_sidebar_width_u16(&self) -> u16 {
+@@ -473,6 +486,24 @@ impl ReadOnlyMuxStateSource {
+         }
+     }
+ 
++    fn persist_session_filter(&self, filter: SessionFilterMode) {
++        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
++            debug_log("set-filter: skipped config save because HOME is unset");
++            return;
++        };
++        if let Err(err) = save_config_to_home(
++            &home,
++            OpensessionsConfig {
++                session_filter: Some(filter),
++                ..OpensessionsConfig::default()
++            },
++        ) {
++            debug_log(format!(
++                "set-filter: failed to save sessionFilter={filter:?}: {err}"
++            ));
++        }
++    }
++
+     pub fn with_now_ms(mut self, now_ms: impl Fn() -> u64 + Send + Sync + 'static) -> Self {
+         self.now_ms = Arc::new(now_ms);
+         self
+@@ -712,6 +743,8 @@ impl StateSource for ReadOnlyMuxStateSource {
+             init_label: (!sidebar_state.init_label.is_empty()).then_some(sidebar_state.init_label),
+             now_ms: (self.now_ms)(),
+         });
++        let switch_index_names = sidebar_display_session_names_from_state(state.clone());
++        self.publish_switch_index_cache(&switch_index_names);
+ 
+         serde_json::to_string(&ServerMessage::State(state)).expect("state must serialize")
+     }
+@@ -838,6 +871,7 @@ impl StateSource for ReadOnlyMuxStateSource {
+                     _ => return None,
+                 };
+                 *self.session_filter.lock().unwrap() = Some(filter);
++                self.persist_session_filter(filter);
+                 Some(self.snapshot_json())
+             }
+             "toggle-worktree-group" => {
+@@ -1083,6 +1117,7 @@ impl StateSource for ReadOnlyMuxStateSource {
+                 }
+                 None
+             }
++            "/reidentify" => Some(reidentify_json()),
+             _ => None,
+         }
+     }
+@@ -1600,6 +1635,18 @@ impl ReadOnlyMuxStateSource {
+         None
+     }
+ 
++    fn publish_switch_index_cache(&self, names: &[String]) {
++        let encoded = encode_switch_index_cache(names);
++        let mut cache = self.switch_index_cache.lock().unwrap();
++        if cache.as_deref() == Some(encoded.as_str()) {
++            return;
++        }
++        for provider in &self.providers {
++            provider.set_switch_index_hint(&encoded);
++        }
++        *cache = Some(encoded);
++    }
++
+     fn session_before(&self, name: &str) -> Option<String> {
+         let names = self.sidebar_display_session_names()?;
+         let index = names.iter().position(|candidate| candidate == name)?;
+@@ -2185,6 +2232,11 @@ fn activate_session_json(name: String, source_pane_id: Option<&str>) -> String {
+     .expect("activate-session must serialize")
+ }
+ 
++fn reidentify_json() -> String {
++    serde_json::to_string(&SidebarServerMessage::ReIdentify)
++        .expect("re-identify message must serialize")
++}
++
+ fn parse_metadata_tone(value: &str) -> Option<MetadataTone> {
+     match value {
+         "neutral" => Some(MetadataTone::Neutral),
+@@ -2836,6 +2888,20 @@ fn app_from_state_json(state_json: &str) -> Option<SidebarApp> {
+     Some(SidebarApp::from_state(state))
+ }
+ 
++fn sidebar_display_session_names_from_state(
++    state: opensessions_runtime::protocol::ServerState,
++) -> Vec<String> {
++    SidebarApp::from_state(state)
++        .display_sessions()
++        .into_iter()
++        .map(|session| session.name.clone())
++        .collect()
++}
++
++fn encode_switch_index_cache(names: &[String]) -> String {
++    names.join("\t")
++}
++
+ async fn read_http_header(stream: &mut TcpStream) -> Result<Vec<u8>, ServerError> {
+     let mut request = Vec::new();
+     let mut buffer = [0_u8; 1024];
+@@ -2946,7 +3012,12 @@ fn is_metadata_path(path: &str) -> bool {
+ fn is_ok_hook_path(path: &str) -> bool {
+     matches!(
+         path,
+-        "/pane-exited" | "/pane-layout-changed" | "/client-resized" | "/ensure-sidebar" | "/toggle"
++        "/pane-exited"
++            | "/pane-layout-changed"
++            | "/client-resized"
++            | "/ensure-sidebar"
++            | "/toggle"
++            | "/reidentify"
+     )
+ }
+ 
+diff --git a/apps/tui-rs/src/main.rs b/apps/tui-rs/src/main.rs
+index 9ab2374..17aa5b1 100644
+--- a/apps/tui-rs/src/main.rs
++++ b/apps/tui-rs/src/main.rs
+@@ -67,6 +67,20 @@ fn debug_log(line: impl AsRef<str>) {
+     }
+ }
+ 
++async fn send_pane_identity(
++    ws: &mut ClientWebSocket,
++    identity: &RuntimePaneIdentity,
++) -> Result<()> {
++    let command = ClientCommand::IdentifyPane {
++        pane_id: identity.pane_id.clone(),
++        session_name: identity.session_name.clone(),
++        window_id: identity.window_id.clone(),
++    };
++    ws.send(Message::text(encode_client_command(&command)?))
++        .await?;
++    Ok(())
++}
++
+ #[tokio::main(flavor = "current_thread")]
+ async fn main() -> Result<()> {
+     let args = Args::parse();
+@@ -82,7 +96,7 @@ async fn main() -> Result<()> {
+         args.server_port
+     };
+ 
+-    let identity = pane_identity_resolve(|key| std::env::var(key).ok(), tmux_display_message);
++    let mut identity = pane_identity_resolve(|key| std::env::var(key).ok(), tmux_display_message);
+ 
+     debug_log(format!(
+         "starting: connecting to ws://{server_host}:{server_port}/ identity={identity:?}"
+@@ -99,19 +113,8 @@ async fn main() -> Result<()> {
+     let hello = decode_server_message(first.as_payload())?;
+     validate_hello(&hello).map_err(anyhow::Error::msg)?;
+ 
+-    if let Some(RuntimePaneIdentity {
+-        pane_id,
+-        session_name,
+-        window_id,
+-    }) = identity.clone()
+-    {
+-        let command = ClientCommand::IdentifyPane {
+-            pane_id,
+-            session_name,
+-            window_id,
+-        };
+-        ws.send(Message::text(encode_client_command(&command)?))
+-            .await?;
++    if let Some(identity) = identity.as_ref() {
++        send_pane_identity(&mut ws, identity).await?;
+     }
+ 
+     let mut terminal = TerminalGuard::enter()?;
+@@ -315,6 +318,35 @@ async fn main() -> Result<()> {
+                     if matches!(decoded, ServerMessage::Quit) {
+                         return Ok(());
+                     }
++                    if matches!(decoded, ServerMessage::ReIdentify) {
++                        let fresh_identity =
++                            pane_identity_resolve(|key| std::env::var(key).ok(), tmux_display_message);
++                        debug_log(format!(
++                            "ws: re-identify requested old={identity:?} fresh={fresh_identity:?}"
++                        ));
++                        if let Some(fresh_identity) = fresh_identity {
++                            send_pane_identity(&mut ws, &fresh_identity).await?;
++                            if let Some(app) = &mut app {
++                                app.set_pane_identity(
++                                    fresh_identity.pane_id.clone(),
++                                    fresh_identity.session_name.clone(),
++                                    fresh_identity.window_id.clone(),
++                                );
++                            }
++                            identity = Some(fresh_identity);
++                        } else if let Some(app) = &mut app {
++                            app.apply_server_message(ServerMessage::ReIdentify);
++                            for command in app.drain_commands() {
++                                send_or_queue_client_command(
++                                    command,
++                                    &mut ws,
++                                    &mut pending_sidebar_width,
++                                )
++                                .await?;
++                            }
++                        }
++                        continue;
++                    }
+                     match (&mut app, decoded) {
+                         (slot @ None, ServerMessage::State(state)) => {
+                             debug_log(format!(
+@@ -383,6 +415,15 @@ async fn send_or_queue_client_command(
+             });
+             Ok(false)
+         }
++        ClientCommand::SwitchSession { name, client_tty } => {
++            flush_pending_sidebar_width(ws, pending_sidebar_width).await?;
++            switch_tmux_client_locally(&name, client_tty.as_deref());
++            ws.send(Message::text(encode_client_command(
++                &ClientCommand::SwitchSession { name, client_tty },
++            )?))
++            .await?;
++            Ok(false)
++        }
+         command => {
+             flush_pending_sidebar_width(ws, pending_sidebar_width).await?;
+             let is_quit = matches!(command, ClientCommand::Quit);
+@@ -393,6 +434,20 @@ async fn send_or_queue_client_command(
+     }
+ }
+ 
++fn switch_tmux_client_locally(name: &str, client_tty: Option<&str>) {
++    if std::env::var_os("TMUX").is_none() {
++        return;
++    }
++
++    let target = format!("={name}:");
++    let mut command = std::process::Command::new("tmux");
++    command.arg("switch-client");
++    if let Some(client_tty) = client_tty.filter(|value| !value.is_empty()) {
++        command.arg("-c").arg(client_tty);
++    }
++    let _ = command.arg("-t").arg(target).status();
++}
++
+ async fn flush_pending_sidebar_width(
+     ws: &mut ClientWebSocket,
+     pending_sidebar_width: &mut Option<PendingSidebarWidthCommand>,
+diff --git a/apps/tui-rs/src/runtime_context.rs b/apps/tui-rs/src/runtime_context.rs
+index c4f6df9..f25a74c 100644
+--- a/apps/tui-rs/src/runtime_context.rs
++++ b/apps/tui-rs/src/runtime_context.rs
+@@ -28,20 +28,20 @@ where
+         .map(|value| value.trim().to_string())
+         .filter(|value| !value.is_empty())?;
+ 
+-    let session_name = env("OPENSESSIONS_SESSION_NAME")
++    let session_name = tmux_query("#{session_name}", &pane_id)
+         .map(|value| value.trim().to_string())
+         .filter(|value| !value.is_empty())
+         .or_else(|| {
+-            tmux_query("#{session_name}", &pane_id)
++            env("OPENSESSIONS_SESSION_NAME")
+                 .map(|value| value.trim().to_string())
+                 .filter(|value| !value.is_empty())
+         })?;
+ 
+-    let window_id = env("OPENSESSIONS_WINDOW_ID")
++    let window_id = tmux_query("#{window_id}", &pane_id)
+         .map(|value| value.trim().to_string())
+         .filter(|value| !value.is_empty())
+         .or_else(|| {
+-            tmux_query("#{window_id}", &pane_id)
++            env("OPENSESSIONS_WINDOW_ID")
+                 .map(|value| value.trim().to_string())
+                 .filter(|value| !value.is_empty())
+         });
+@@ -98,3 +98,54 @@ where
+         select_pane: main_pane.to_string(),
+     })
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn pane_identity_prefers_live_tmux_values_over_spawn_env() {
++        let env = |key: &str| match key {
++            "TMUX_PANE" => Some("%1".to_string()),
++            "OPENSESSIONS_SESSION_NAME" => Some("old-name".to_string()),
++            "OPENSESSIONS_WINDOW_ID" => Some("@old".to_string()),
++            _ => None,
++        };
++        let tmux_query = |format: &str, target: &str| {
++            assert_eq!(target, "%1");
++            match format {
++                "#{session_name}" => Some("new-name".to_string()),
++                "#{window_id}" => Some("@new".to_string()),
++                _ => None,
++            }
++        };
++
++        assert_eq!(
++            pane_identity_resolve(env, tmux_query),
++            Some(PaneIdentity {
++                pane_id: "%1".to_string(),
++                session_name: "new-name".to_string(),
++                window_id: Some("@new".to_string()),
++            })
++        );
++    }
++
++    #[test]
++    fn pane_identity_falls_back_to_spawn_env_when_tmux_is_unavailable() {
++        let env = |key: &str| match key {
++            "TMUX_PANE" => Some("%1".to_string()),
++            "OPENSESSIONS_SESSION_NAME" => Some("spawn-name".to_string()),
++            "OPENSESSIONS_WINDOW_ID" => Some("@spawn".to_string()),
++            _ => None,
++        };
++
++        assert_eq!(
++            pane_identity_resolve(env, |_, _| None),
++            Some(PaneIdentity {
++                pane_id: "%1".to_string(),
++                session_name: "spawn-name".to_string(),
++                window_id: Some("@spawn".to_string()),
++            })
++        );
++    }
++}
+diff --git a/integrations/tmux-plugin/scripts/focus.sh b/integrations/tmux-plugin/scripts/focus.sh
+index e0fa2c5..e7c2412 100644
+--- a/integrations/tmux-plugin/scripts/focus.sh
++++ b/integrations/tmux-plugin/scripts/focus.sh
+@@ -4,7 +4,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ . "$SCRIPT_DIR/server-common.sh"
+ 
+ find_sidebar_pane() {
+-  tmux list-panes -t "$1" -F '#{pane_id} #{pane_title}' 2>/dev/null | awk '$2 == "opensessions-sidebar" { print $1; exit }'
++  tmux list-panes -t "$1" -F '#{pane_id} #{pane_title} #{pane_current_command} #{pane_dead}' 2>/dev/null \
++    | awk '$2 == "opensessions-sidebar" && $3 == "opensessions-sidebar" && $4 == "0" { print $1; exit }'
+ }
+ 
+ WINDOW_ID="$(tmux display-message -p '#{window_id}' 2>/dev/null)"
+diff --git a/integrations/tmux-plugin/scripts/switch-index.sh b/integrations/tmux-plugin/scripts/switch-index.sh
+index 5c1ce09..1d95f28 100755
+--- a/integrations/tmux-plugin/scripts/switch-index.sh
++++ b/integrations/tmux-plugin/scripts/switch-index.sh
+@@ -4,6 +4,18 @@
+ INDEX="${1:?Usage: switch-index.sh <index>}"
+ 
+ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
++
++switch_from_cache() {
++  cache="$(tmux show-option -gqv @opensessions_visible_sessions 2>/dev/null || true)"
++  [ -n "$cache" ] || return 1
++
++  target="$(printf '%s' "$cache" | awk -v idx="$INDEX" 'BEGIN { RS = "\t" } NR == idx { print; exit }')"
++  [ -n "$target" ] || return 1
++  tmux switch-client -t "=$target:" \; switch-client -T root >/dev/null 2>&1
++}
++
++switch_from_cache && exit 0
++
+ . "$SCRIPT_DIR/server-common.sh"
+ 
+ ensure_server || exit 0
+diff --git a/integrations/tmux-plugin/scripts/uninstall.sh b/integrations/tmux-plugin/scripts/uninstall.sh
+index e50a532..c5f5e80 100755
+--- a/integrations/tmux-plugin/scripts/uninstall.sh
++++ b/integrations/tmux-plugin/scripts/uninstall.sh
+@@ -15,14 +15,19 @@ echo "opensessions: uninstalling..."
+ # --- Remove global hooks ---
+ for hook in \
+   client-session-changed \
++  after-select-pane \
++  after-new-session \
+   session-created \
+   session-closed \
++  session-renamed \
+   client-resized \
+   after-select-window \
+   after-new-window \
+   after-kill-pane \
+   pane-exited \
+-  after-resize-pane; do
++  pane-died \
++  after-resize-pane \
++  after-resize-window; do
+   tmux set-hook -gu "$hook" 2>/dev/null || true
+ done
+ echo "  ✓ removed global hooks"
+diff --git a/packages/runtime-rs/src/mux.rs b/packages/runtime-rs/src/mux.rs
+index b09dd24..5d6259b 100644
+--- a/packages/runtime-rs/src/mux.rs
++++ b/packages/runtime-rs/src/mux.rs
+@@ -68,6 +68,7 @@ pub trait MuxProvider: Send + Sync {
+     fn setup_hooks(&self, server_host: &str, server_port: u16);
+     fn cleanup_hooks(&self);
+     fn set_sidebar_width_hint(&self, _width: u16) {}
++    fn set_switch_index_hint(&self, _visible_sessions: &str) {}
+ 
+     fn is_window_capable(&self) -> bool {
+         false
 diff --git a/packages/runtime-rs/src/tmux_provider.rs b/packages/runtime-rs/src/tmux_provider.rs
-index fa72cdb..2147fc8 100644
+index fa72cdb..c2e4a1d 100644
 --- a/packages/runtime-rs/src/tmux_provider.rs
 +++ b/packages/runtime-rs/src/tmux_provider.rs
-@@ -527,6 +527,8 @@ impl MuxProvider for TmuxProvider {
+@@ -508,6 +508,8 @@ impl MuxProvider for TmuxProvider {
+         let hook_context = hook_context_format();
+         let focus_cmd = http_hook_command(&base, "/focus", Some(hook_context), true);
+         let refresh_cmd = http_hook_command(&base, "/refresh", None, true);
++        let reidentify_cmd = http_hook_command(&base, "/reidentify", None, true);
++        let session_renamed_cmd = format!("{focus_cmd} ; {refresh_cmd} ; {reidentify_cmd}");
+         let ensure_cmd = http_hook_command(&base, "/ensure-sidebar", Some(hook_context), true);
+         let pane_exited_cmd = pane_exited_hook_command(&base);
+         let pane_died_cmd = pane_died_hook_command(&base);
+@@ -527,8 +529,12 @@ impl MuxProvider for TmuxProvider {
              &format!("{focus_cmd} ; {ensure_cmd}"),
          );
          self.client.set_global_hook("after-select-pane", &focus_cmd);
@@ -10,7 +471,93 @@ index fa72cdb..2147fc8 100644
 +            .set_global_hook("after-new-session", &ensure_cmd);
          self.client.set_global_hook("session-created", &refresh_cmd);
          self.client.set_global_hook("session-closed", &refresh_cmd);
++        self.client
++            .set_global_hook("session-renamed", &session_renamed_cmd);
          self.client
+             .set_global_hook("after-select-window", &ensure_cmd);
+         self.client.set_global_hook("after-new-window", &ensure_cmd);
+@@ -550,8 +556,10 @@ impl MuxProvider for TmuxProvider {
+         for hook in [
+             "client-session-changed",
+             "after-select-pane",
++            "after-new-session",
+             "session-created",
+             "session-closed",
++            "session-renamed",
+             "after-select-window",
+             "after-new-window",
+             "client-resized",
+@@ -564,6 +572,8 @@ impl MuxProvider for TmuxProvider {
+             self.client.unset_global_hook(hook);
+         }
+         self.client.unset_global_option("@opensessions_width");
++        self.client
++            .unset_global_option("@opensessions_visible_sessions");
+     }
+ 
+     fn set_sidebar_width_hint(&self, width: u16) {
+@@ -571,6 +581,11 @@ impl MuxProvider for TmuxProvider {
+             .set_global_option("@opensessions_width", &width.to_string());
+     }
+ 
++    fn set_switch_index_hint(&self, visible_sessions: &str) {
++        self.client
++            .set_global_option("@opensessions_visible_sessions", visible_sessions);
++    }
++
+     fn is_window_capable(&self) -> bool {
+         true
+     }
+@@ -1042,6 +1057,49 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn setup_hooks_refreshes_and_reidentifies_on_session_rename() {
++        let runner = Arc::new(RecordingRunner::default());
++        let provider = TmuxProvider::new(runner.clone());
++
++        provider.setup_hooks("127.0.0.1", 1234);
++
++        let calls = runner.calls.lock().unwrap();
++        let rename_hook = calls
++            .iter()
++            .find(|args| {
++                args.get(0).map(String::as_str) == Some("set-hook")
++                    && args.get(2).map(String::as_str) == Some("session-renamed")
++            })
++            .expect("session-renamed hook should be installed");
++        let command = rename_hook.get(3).expect("hook command");
++        assert!(command.contains("http://127.0.0.1:1234/focus"));
++        assert!(command.contains("http://127.0.0.1:1234/refresh"));
++        assert!(command.contains("http://127.0.0.1:1234/reidentify"));
++        assert!(
++            command
++                .contains("#{client_tty}|#{session_name}|#{window_id}|#{pane_id}|#{pane_active}")
++        );
++    }
++
++    #[test]
++    fn set_switch_index_hint_publishes_visible_sessions_option() {
++        let runner = Arc::new(RecordingRunner::default());
++        let provider = TmuxProvider::new(runner.clone());
++
++        provider.set_switch_index_hint("one\ttwo");
++
++        assert_eq!(
++            runner.calls.lock().unwrap()[0],
++            vec![
++                "set-option".to_string(),
++                "-gq".to_string(),
++                "@opensessions_visible_sessions".to_string(),
++                "one\ttwo".to_string(),
++            ],
++        );
++    }
++
+     #[test]
+     fn client_focus_uses_tmux_target_client_not_window_active_state() {
+         let runner = Arc::new(RecordingRunner::default());
 diff --git a/packages/sidebar-core-rs/src/app.rs b/packages/sidebar-core-rs/src/app.rs
 index 2d92d8c..1551e11 100644
 --- a/packages/sidebar-core-rs/src/app.rs
